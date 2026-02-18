@@ -29,7 +29,7 @@ if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN이 .env에 설정되어 있지 않습니다.")
 
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="/", intents=intents)
 
 error_logs = []
 MAX_LOGS = 50
@@ -1227,20 +1227,25 @@ async def auto_sync():
 
 
 @bot.event
+@bot.event
 async def on_ready():
-    if GUILD_ID:
-        guild = discord.Object(id=GUILD_ID)
-        bot.tree.copy_global_to(guild=guild)
-        await bot.tree.sync(guild=guild)
-    else:
-        await bot.tree.sync()
+    print("on_ready 호출")
+
+    # 봇이 들어가 있는 모든 서버에 슬래시 명령어 동기화
+    synced_total = 0
+    for guild in bot.guilds:
+        try:
+            synced = await bot.tree.sync(guild=guild)
+            print(f"[{guild.name}]({guild.id}) 에 명령어 {len(synced)}개 동기화")
+            synced_total += len(synced)
+        except Exception as e:
+            print(f"[{guild.name}]({guild.id}) 동기화 실패: {repr(e)}")
 
     await bot.change_presence(activity=discord.Game("🟢 정상 작동중 입니다."))
     if not auto_sync.is_running():
         auto_sync.start()
 
-    print(f"봇 실행 완료: {bot.user} (ID: {bot.user.id})")
-
+    print(f"봇 실행 완료: {bot.user} (ID: {bot.user.id}), 총 동기화 명령어 수: {synced_total}")
 
 async def main():
     async with bot:
