@@ -594,6 +594,136 @@ async def announce(interaction: discord.Interaction, 제목: str, 내용: str, �
 
     await interaction.followup.send(result_text, ephemeral=True)
 
+@bot.tree.command(name="강제인증", description="유저를 강제로 인증합니다. (관리자)")
+@app_commands.describe(유저="인증할 유저", 로블닉="로블록스 닉네임")
+async def force_verify(interaction: discord.Interaction, 유저: discord.Member, 로블닉: str):
+
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("❌ 관리자만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    role_id = get_guild_role_id(interaction.guild.id)
+    if not role_id:
+        await interaction.followup.send("❌ 인증 역할이 설정되지 않았습니다.", ephemeral=True)
+        return
+
+    role = interaction.guild.get_role(role_id)
+    if not role:
+        await interaction.followup.send("❌ 인증 역할을 찾을 수 없습니다.", ephemeral=True)
+        return
+
+    # 중복 체크
+    cursor.execute("SELECT verified FROM users WHERE discord_id=? AND guild_id=?",
+                   (유저.id, interaction.guild.id))
+    data = cursor.fetchone()
+
+    if data and data[0] == 1:
+        await interaction.followup.send("⚠ 이미 인증된 유저입니다.", ephemeral=True)
+        return
+
+    user_id = await roblox_get_user_id_by_username(로블닉)
+    if not user_id:
+        await interaction.followup.send("❌ 로블록스 닉네임을 찾을 수 없습니다.", ephemeral=True)
+        return
+
+    cursor.execute("""
+        INSERT OR REPLACE INTO users(discord_id, guild_id, roblox_nick, roblox_user_id, verified)
+        VALUES(?,?,?,?,1)
+    """, (유저.id, interaction.guild.id, 로블닉, user_id))
+    conn.commit()
+
+    try:
+        await 유저.add_roles(role)
+    except discord.Forbidden:
+        await interaction.followup.send("⚠ 역할 추가 권한이 없습니다.", ephemeral=True)
+        return
+
+    await interaction.followup.send(f"✅ {유저.mention} 강제 인증 완료.", ephemeral=True)
+@bot.tree.command(name="강제인증해제", description="유저를 강제로 인증 해제합니다. (관리자)")
+@app_commands.describe(유저="해제할 유저")
+async def force_unverify(interaction: discord.Interaction, 유저: discord.Member):
+
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("❌ 관리자만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    cursor.execute("SELECT verified FROM users WHERE discord_id=? AND guild_id=?",
+                   (유저.id, interaction.guild.id))
+    data = cursor.fetchone()
+
+    if not data or data[0] == 0:
+        await interaction.followup.send("⚠ 이미 미인증 상태입니다.", ephemeral=True)
+        return
+
+    cursor.execute("UPDATE users SET verified=0 WHERE discord_id=? AND guild_id=?",
+                   (유저.id, interaction.guild.id))
+    conn.commit()
+
+    role_id = get_guild_role_id(interaction.guild.id)
+    role = interaction.guild.get_role(role_id) if role_id else None
+
+    if role and role in 유저.roles:
+        try:
+            await 유저.remove_roles(role)
+        except discord.Forbidden:
+            await interaction.followup.send("⚠ 역할 제거 권한이 없습니다.", ephemeral=True)
+            return
+
+    await interaction.followup.send(f"✅ {유저.mention} 강제 인증 해제 완료.", ephemeral=True)
+@bot.tree.command(name="일괄강제인증", description="모든 유저를 강제로 인증합니다. (관리자)")
+async def bulk_force_verify(interaction: discord.Interaction):
+
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("❌ 관리자만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    role_id = get_guild_role_id(interaction.guild.id)
+    if not role_id:
+        await interaction.followup.send("❌ 인증 역할이 설정되지 않았습니다.", ephemeral=True)
+        return
+
+    role = interaction.guild.get_role(role_id)
+    if not role:
+        await interaction.followup.send("❌ 인증 역할을 찾을 수 없습니다.", ephemeral=True)
+        return
+
+    success = 0
+    failed = 0
+
+    for member in interaction.guild.members:
+        if member.bot:
+            continue
+
+        try:
+            cursor.execute("""
+                INSERT OR REPLACE INTO users(discord_id, guild_id, verified)
+                VALUES(?,?,1)
+            """, (member.id, interaction.guild.id))
+
+            if role not in member.roles:
+                await member.add_roles(role)
+
+            success += 1
+
+        except discord.Forbidden:
+            failed += 1
+        except Exception:
+            failed += 1
+
+    conn.commit()
+
+    result = f"✅ {success}명 강제 인증 완료."
+    if failed:
+        result += f"\n⚠ {failed}명 실패 (권한 문제 등)"
+
+    await interaction.followup.send(result, ephemeral=True)
+
 
 @bot.tree.command(name="백업생성", description="현재 DB를 백업합니다. (개발자)")
 async def backup_db(interaction: discord.Interaction):
@@ -888,4 +1018,5 @@ async def main():
 
 if __name__ == "__main__":
     import asyncio
+
     asyncio.run(main())
