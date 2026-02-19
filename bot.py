@@ -1338,28 +1338,6 @@ class BanReportModal(discord.ui.Modal, title="밴 보고서 양식"):
 
         await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="보고서", description="보고서 종류를 선택해 양식을 작성합니다.")
-@app_commands.describe(종류="보고서 종류 선택")
-@app_commands.choices(종류=[
-    app_commands.Choice(name="진급", value="promote"),
-    app_commands.Choice(name="처벌", value="punish"),
-    app_commands.Choice(name="밴", value="ban"),
-])
-async def report_cmd(interaction: discord.Interaction, 종류: app_commands.Choice[str]):
-    if 종류.value == "promote":
-        # /보고서 종류: 진급 -> 진급 모달
-        await interaction.response.send_modal(PromoteReportModal())
-    elif 종류.value == "punish":
-        # /보고서 종류: 처벌 -> 처벌 모달
-        await interaction.response.send_modal(PunishReportModal())
-    elif 종류.value == "ban":
-        # /보고서 종류: 밴 -> 밴 모달
-        await interaction.response.send_modal(BanReportModal())
-    else:
-        await interaction.response.send_message(
-            "알 수 없는 보고서 종류입니다.", ephemeral=True
-        )
-
 @bot.tree.command(name="재동기화", description="봇 명령어를 재동기화합니다. (개발자)")
 async def resync_commands(interaction: discord.Interaction):
     if not is_owner(interaction.user.id):
@@ -1384,6 +1362,49 @@ async def resync_commands(interaction: discord.Interaction):
             f"❌ 동기화 중 오류가 발생했습니다: {e}", ephemeral=True
         )
 
+
+class BanReportModal(discord.ui.Modal, title="밴 보고서 양식"):
+    작성자 = discord.ui.TextInput(label="작성자 닉네임", required=True, max_length=50)
+    대상자 = discord.ui.TextInput(label="대상자 닉네임", required=True, max_length=50)
+    사유 = discord.ui.TextInput(
+        label="사유",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=400,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="밴 보고서",
+            color=discord.Color.red(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="작성자 닉네임", value=str(self.작성자), inline=False)
+        embed.add_field(name="대상자 닉네임", value=str(self.대상자), inline=False)
+        embed.add_field(name="사유", value=str(self.사유), inline=False)
+        embed.set_footer(text="보고서 - 밴")
+
+        await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="보고서", description="보고서 종류를 선택해 양식을 작성합니다.")
+@app_commands.describe(종류="보고서 종류 선택")
+@app_commands.choices(종류=[
+    app_commands.Choice(name="진급", value="promote"),
+    app_commands.Choice(name="처벌", value="punish"),
+    app_commands.Choice(name="밴", value="ban"),
+])
+async def report_cmd(interaction: discord.Interaction, 종류: app_commands.Choice[str]):
+    if 종류.value == "promote":
+        await interaction.response.send_modal(PromoteReportModal())
+    elif 종류.value == "punish":
+        await interaction.response.send_modal(PunishReportModal())
+    elif 종류.value == "ban":
+        await interaction.response.send_modal(BanReportModal())
+    else:
+        await interaction.response.send_message(
+            "알 수 없는 보고서 종류입니다.", ephemeral=True
+        )
 
 @bot.tree.command(name="확인", description="데이터 초기화 확인 (개발자)")
 async def confirm_action(interaction: discord.Interaction):
@@ -1424,32 +1445,26 @@ async def auto_sync():
 
 
 @bot.event
+# ---------- on_ready / 자동 동기화 ----------
+
 @bot.event
 async def on_ready():
     print("on_ready 호출")
 
-    # 봇이 들어가 있는 모든 서버에 슬래시 명령어 동기화
-    synced_total = 0
+    total = 0
     for guild in bot.guilds:
         try:
             synced = await bot.tree.sync(guild=guild)
             print(f"[{guild.name}]({guild.id}) 에 명령어 {len(synced)}개 동기화")
-            synced_total += len(synced)
+            total += len(synced)
         except Exception as e:
-            print(f"[{guild.name}]({guild.id}) 동기화 실패: {repr(e)}")
+            print(f"[{guild.name}] sync 실패: {e!r}")
 
-    await bot.change_presence(activity=discord.Game("🟢 정상 작동중 입니다."))
-    if not auto_sync.is_running():
-        auto_sync.start()
+    print(f"봇 실행 완료: {bot.user} (ID: {bot.user.id}), 총 동기화 명령어 수: {total}")
+    print("자동 동기화 완료")
 
-    print(f"봇 실행 완료: {bot.user} (ID: {bot.user.id}), 총 동기화 명령어 수: {synced_total}")
 
-async def main():
-    async with bot:
-        await bot.start(TOKEN)
-
+# ---------- 봇 실행 ----------
 
 if __name__ == "__main__":
-    import asyncio
-
-    asyncio.run(main())
+    bot.run(TOKEN)
