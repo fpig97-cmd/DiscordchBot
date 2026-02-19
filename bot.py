@@ -40,6 +40,23 @@ cursor = conn.cursor()
 
 # ---------- DB 테이블 ----------
 
+def get_guild_group_id(guild_id: int) -> Optional[int]:
+    cursor.execute("SELECT group_id FROM group_settings WHERE guild_id=?", (guild_id,))
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def set_guild_group_id(guild_id: int, group_id: int) -> None:
+    cursor.execute(
+        """
+        INSERT INTO group_settings(guild_id, group_id)
+        VALUES(?, ?)
+        ON CONFLICT(guild_id) DO UPDATE SET group_id=excluded.group_id
+        """,
+        (guild_id, group_id),
+    )
+    conn.commit()
+
 cursor.execute(
     """CREATE TABLE IF NOT EXISTS users(
         discord_id INTEGER,
@@ -503,6 +520,28 @@ async def configure(interaction: discord.Interaction, 역할: discord.Role):
         f"✅ 인증 역할을 {역할.mention}로 설정했습니다.", ephemeral=True
     )
 
+@bot.tree.command(name="그룹지정", description="로블록스 그룹 ID를 설정합니다. (개발자)")
+@app_commands.describe(그룹아이디="로블록스 그룹 ID (숫자)")
+async def set_group_id(interaction: discord.Interaction, 그룹아이디: int):
+    # 개발자만 사용
+    if not is_owner(interaction.user.id):
+        await interaction.response.send_message(
+            "❌ 개발자만 사용할 수 있습니다.", ephemeral=True
+        )
+        return
+
+    if 그룹아이디 <= 0:
+        await interaction.response.send_message(
+            "❌ 그룹 ID는 0보다 큰 숫자여야 합니다.", ephemeral=True
+        )
+        return
+
+    set_guild_group_id(interaction.guild.id, 그룹아이디)
+
+    await interaction.response.send_message(
+        f"✅ 이 서버의 로블록스 그룹 ID를 `{그룹아이디}`로 설정했습니다.",
+        ephemeral=True,
+    )
 
 @bot.tree.command(name="관리자지정", description="관리자 역할을 설정하거나 해제합니다. (개발자)")
 @app_commands.describe(역할="관리자 역할 (비워두면 해제)")
@@ -669,28 +708,70 @@ async def verify_check(interaction: discord.Interaction):
 async def command_list(interaction: discord.Interaction):
     embed = discord.Embed(title="봇 명령어 목록", color=discord.Color.blurple())
 
+    # 🔐 인증 / 기본 설정
     embed.add_field(
-        name="🔐 인증 명령어",
-        value="`/인증` `/인증해제` `/인증확인` `/설정`",
+        name="🔐 인증 / 기본 설정",
+        value=(
+            "`/인증` `/인증해제` `/인증확인`\n"
+            "`/설정` `/그룹지정`\n"
+            "`/관리자지정`"
+        ),
         inline=False,
     )
+
+    # 📊 정보 / 조회
     embed.add_field(
-        name="📊 정보 명령어",
-        value="`/핑` `/제작자` `/명단리스트` `/통계` `/서버정보` `/명령어목록`",
+        name="📊 정보 / 조회",
+        value=(
+            "`/핑` `/제작자`\n"
+            "`/명단리스트` `/통계` `/서버정보`\n"
+            "`/명령어목록`"
+        ),
         inline=False,
     )
+
+    # 👨‍💼 관리자 전용
     embed.add_field(
         name="👨‍💼 관리자 명령어",
-        value="`/유저검색` `/일괄닉네임변경` `/데이터초기화`",
+        value="`/유저검색` `/일괄닉네임변경`",
         inline=False,
     )
+
+    # 🧨 데이터 / 위험 작업 (개발자)
     embed.add_field(
-        name="👨‍💻 개발자 명령어",
-        value="`/공지` `/봇상태` `/백업생성` `/오류로그` `/시스템정보` `/관리자지정`",
+        name="🧨 데이터 / 위험 작업 (개발자)",
+        value="`/데이터초기화` `/일괄인증삭제`",
+        inline=False,
+    )
+
+    # 📢 공지 / 관리 (개발자)
+    embed.add_field(
+        name="📢 공지 / 관리 (개발자)",
+        value=(
+            "`/공지` `/백업생성`\n"
+            "`/오류로그` `/시스템정보`\n"
+            "`/봇상태` `/상태채널설정`\n"
+            "`/봇랭크갱신` `/로그지우기`"
+        ),
+        inline=False,
+    )
+
+    # 📝 보고서
+    embed.add_field(
+        name="📝 보고서",
+        value="`/보고서`",
+        inline=False,
+    )
+
+    # 🔁 동기화 / 확인 (개발자)
+    embed.add_field(
+        name="🔁 동기화 / 확인 (개발자)",
+        value="`/재동기화` `/확인` `/확인삭제`",
         inline=False,
     )
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 
 @bot.tree.command(
@@ -740,6 +821,15 @@ async def bulk_nickname_update(interaction: discord.Interaction):
 
     await interaction.response.defer(ephemeral=True)
 
+    # 🔹 여기 추가: 서버별 그룹 ID 가져오기
+    group_id = get_guild_group_id(interaction.guild.id)
+    if not group_id:
+        await interaction.followup.send(
+            "❌ 그룹 ID가 설정되지 않았습니다. /그룹지정 으로 먼저 설정해주세요.",
+            ephemeral=True,
+        )
+        return
+
     cursor.execute(
         "SELECT discord_id, roblox_nick, roblox_user_id "
         "FROM users WHERE guild_id=? AND verified=1",
@@ -758,7 +848,10 @@ async def bulk_nickname_update(interaction: discord.Interaction):
         try:
             member = interaction.guild.get_member(discord_id)
             if member and roblox_user_id:
-                rank_name = await roblox_get_group_rank_by_user_id(roblox_user_id)
+                # 🔹 여기서도 group_id 넘겨주기
+                rank_name = await roblox_get_group_rank_by_user_id(
+                    roblox_user_id, group_id=group_id
+                )
 
                 if rank_name:
                     await member.edit(nick=f"[{rank_name}] {roblox_nick}")
