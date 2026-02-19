@@ -18,6 +18,7 @@ env_path = os.path.join(BASE_DIR, ".env")
 load_dotenv(env_path)
 
 TOKEN = os.getenv("DISCORD_TOKEN")
+GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 CREATOR_ROBLOX_NICK = "DeSky_Lunarx"
@@ -28,9 +29,9 @@ if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN이 .env에 설정되어 있지 않습니다.")
 
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="/", intents=intents)
 
-error_logs: list[dict] = []
+error_logs = []
 MAX_LOGS = 50
 
 DB_PATH = os.path.join(BASE_DIR, "bot.db")
@@ -86,7 +87,7 @@ cursor.execute(
     )"""
 )
 
-# admin_role_id 컬럼 없을 경우 대비
+# 이미 있는 DB에는 admin_role_id 컬럼이 없을 수 있으므로 추가 시도
 try:
     cursor.execute("ALTER TABLE settings ADD COLUMN admin_role_id INTEGER")
 except sqlite3.OperationalError:
@@ -94,7 +95,7 @@ except sqlite3.OperationalError:
 
 conn.commit()
 
-# ---------- 유틸 / 권한 ----------
+# ---------- 설정/권한 유틸 ----------
 
 
 def get_guild_role_id(guild_id: int) -> Optional[int]:
@@ -145,14 +146,12 @@ def set_guild_admin_role_id(guild_id: int, role_id: Optional[int]) -> None:
     conn.commit()
 
 
-def is_owner(user_id: int) -> bool:
-    return OWNER_ID > 0 and user_id == OWNER_ID
-
-
 def is_admin(member: discord.Member) -> bool:
+    # 디스코드 기본 관리자 권한
     if member.guild_permissions.administrator:
         return True
 
+    # 커스텀 관리자 역할
     admin_role_id = get_guild_admin_role_id(member.guild.id)
     if admin_role_id:
         admin_role = member.guild.get_role(admin_role_id)
@@ -160,6 +159,10 @@ def is_admin(member: discord.Member) -> bool:
             return True
 
     return False
+
+
+def is_owner(user_id: int) -> bool:
+    return OWNER_ID > 0 and user_id == OWNER_ID
 
 
 def add_error_log(error_msg: str) -> None:
@@ -172,44 +175,6 @@ def generate_code() -> str:
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
 
 
-def get_bot_status() -> str:
-    """현재 저장된 봇 상태 문자열(준비중/정상/중지/오류수정중)을 반환"""
-    cursor.execute("SELECT status_text FROM bot_status WHERE id=1")
-    row = cursor.fetchone()
-    if row and row[0]:
-        return row[0]
-    return "정상"
-
-
-async def check_service_available(interaction: discord.Interaction) -> bool:
-    """
-    봇 상태에 따라 명령어 사용 가능 여부 체크.
-    - 정상: 모두 사용 가능
-    - 준비중 / 중지 / 오류수정중: OWNER_ID(개발자)만 사용 가능
-    """
-    status = get_bot_status()
-
-    if status == "정상":
-        return True
-
-    if is_owner(interaction.user.id):
-        return True
-
-    msg_map = {
-        "준비중": "🟠 현재 서비스 준비중입니다. 잠시 후 다시 이용해주세요.",
-        "중지": "🔴 현재 서비스가 중지된 상태입니다.",
-        "오류수정중": "🟥 현재 오류 수정중입니다. 잠시 후 다시 이용해주세요.",
-    }
-    text = msg_map.get(status, "⚠️ 현재 서비스 이용이 제한된 상태입니다.")
-
-    if interaction.response.is_done():
-        await interaction.followup.send(text, ephemeral=True)
-    else:
-        await interaction.response.send_message(text, ephemeral=True)
-
-    return False
-
-
 ROBLOX_USERNAME_API = "https://users.roblox.com/v1/usernames/users"
 ROBLOX_USER_API = "https://users.roblox.com/v1/users/{userId}"
 
@@ -219,6 +184,7 @@ ROBLOX_USER_API = "https://users.roblox.com/v1/users/{userId}"
 async def roblox_get_group_rank_by_user_id(
     user_id: int, group_id: int = 34965893
 ) -> Optional[str]:
+    """유저의 그룹 랭크 가져오기"""
     url = f"https://groups.roblox.com/v1/users/{user_id}/groups/roles"
 
     async with aiohttp.ClientSession() as session:
@@ -299,8 +265,7 @@ class VerifyView(discord.ui.View):
                 return
 
             cursor.execute(
-                "SELECT roblox_nick, roblox_user_id, expire_time, code "
-                "FROM users WHERE discord_id=? AND guild_id=?",
+                "SELECT roblox_nick, roblox_user_id, expire_time, code FROM users WHERE discord_id=? AND guild_id=?",
                 (interaction.user.id, self.guild_id),
             )
             data = cursor.fetchone()
@@ -383,6 +348,7 @@ class VerifyView(discord.ui.View):
 
             await member.add_roles(role)
 
+            # 로블록스 그룹 랭크 가져오기 후 닉네임 변경
             try:
                 rank_name = await roblox_get_group_rank_by_user_id(roblox_user_id)
 
@@ -424,9 +390,6 @@ class VerifyView(discord.ui.View):
 @bot.tree.command(name="인증", description="로블록스 계정 인증을 시작합니다.")
 @app_commands.describe(로블닉="로블록스 닉네임")
 async def verify(interaction: discord.Interaction, 로블닉: str):
-    if not await check_service_available(interaction):
-        return
-
     await interaction.response.defer(ephemeral=True)
 
     role_id = get_guild_role_id(interaction.guild.id)
@@ -490,9 +453,6 @@ async def verify(interaction: discord.Interaction, 로블닉: str):
 @bot.tree.command(name="인증해제", description="유저 인증 해제 (관리자)")
 @app_commands.describe(유저="해제할 유저")
 async def unverify(interaction: discord.Interaction, 유저: discord.Member):
-    if not await check_service_available(interaction):
-        return
-
     if not is_admin(interaction.user):
         await interaction.response.send_message("❌ 관리자만 사용할 수 있습니다.", ephemeral=True)
         return
@@ -527,9 +487,6 @@ async def unverify(interaction: discord.Interaction, 유저: discord.Member):
 @bot.tree.command(name="설정", description="인증 역할 설정 (관리자)")
 @app_commands.describe(역할="인증 역할")
 async def configure(interaction: discord.Interaction, 역할: discord.Role):
-    if not await check_service_available(interaction):
-        return
-
     if not is_admin(interaction.user):
         await interaction.response.send_message("❌ 관리자만 사용할 수 있습니다.", ephemeral=True)
         return
@@ -577,18 +534,12 @@ async def set_admin_role(
 
 @bot.tree.command(name="핑", description="봇의 응답 속도를 확인합니다.")
 async def ping(interaction: discord.Interaction):
-    if not await check_service_available(interaction):
-        return
-
     latency_ms = round(bot.latency * 1000)
     await interaction.response.send_message(f"🏓 핑: {latency_ms} ms", ephemeral=True)
 
 
 @bot.tree.command(name="제작자", description="봇 제작자 정보를 표시합니다.")
 async def creator_info(interaction: discord.Interaction):
-    if not await check_service_available(interaction):
-        return
-
     user = interaction.user
     now = datetime.now(timezone.utc)
     created_at = user.created_at.replace(tzinfo=timezone.utc)
@@ -613,13 +564,8 @@ async def creator_info(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(
-    name="명단리스트", description="서버의 모든 역할 이름과 ID를 표시합니다."
-)
+@bot.tree.command(name="명단리스트", description="서버의 모든 역할 이름과 ID를 표시합니다.")
 async def role_list(interaction: discord.Interaction):
-    if not await check_service_available(interaction):
-        return
-
     guild = interaction.guild
     lines = []
     for role in sorted(guild.roles, key=lambda r: r.position, reverse=True):
@@ -637,9 +583,6 @@ async def role_list(interaction: discord.Interaction):
 
 @bot.tree.command(name="통계", description="봇 사용 통계를 확인합니다.")
 async def stats(interaction: discord.Interaction):
-    if not await check_service_available(interaction):
-        return
-
     cursor.execute(
         "SELECT verify_count, cancel_count FROM stats WHERE guild_id=?",
         (interaction.guild.id,),
@@ -658,9 +601,6 @@ async def stats(interaction: discord.Interaction):
 
 @bot.tree.command(name="서버정보", description="서버 기본 정보를 표시합니다.")
 async def server_info(interaction: discord.Interaction):
-    if not await check_service_available(interaction):
-        return
-
     guild = interaction.guild
     if guild is None:
         await interaction.response.send_message(
@@ -687,12 +627,8 @@ async def server_info(interaction: discord.Interaction):
 
 @bot.tree.command(name="인증확인", description="프로필에 입력한 코드를 확인합니다.")
 async def verify_check(interaction: discord.Interaction):
-    if not await check_service_available(interaction):
-        return
-
     cursor.execute(
-        "SELECT roblox_nick, code, expire_time "
-        "FROM users WHERE discord_id=? AND guild_id=?",
+        "SELECT roblox_nick, code, expire_time FROM users WHERE discord_id=? AND guild_id=?",
         (interaction.user.id, interaction.guild.id),
     )
     data = cursor.fetchone()
@@ -709,8 +645,7 @@ async def verify_check(interaction: discord.Interaction):
 
     if remaining <= 0:
         await interaction.response.send_message(
-            "❌ 인증 시간이 만료되었습니다. /인증 명령어를 다시 실행해주세요.",
-            ephemeral=True,
+            "❌ 인증 시간이 만료되었습니다. /인증 명령어를 다시 실행해주세요.", ephemeral=True
         )
         return
 
@@ -732,9 +667,6 @@ async def verify_check(interaction: discord.Interaction):
 
 @bot.tree.command(name="명령어목록", description="모든 명령어 목록을 확인합니다.")
 async def command_list(interaction: discord.Interaction):
-    if not await check_service_available(interaction):
-        return
-
     embed = discord.Embed(title="봇 명령어 목록", color=discord.Color.blurple())
 
     embed.add_field(
@@ -766,9 +698,6 @@ async def command_list(interaction: discord.Interaction):
 )
 @app_commands.describe(검색어="로블닉 또는 디코 닉네임")
 async def user_search(interaction: discord.Interaction, 검색어: str):
-    if not await check_service_available(interaction):
-        return
-
     if not is_admin(interaction.user):
         await interaction.response.send_message("❌ 관리자만 사용할 수 있습니다.", ephemeral=True)
         return
@@ -805,9 +734,6 @@ async def user_search(interaction: discord.Interaction, 검색어: str):
     name="일괄닉네임변경", description="모든 인증 유저의 닉네임을 갱신합니다. (관리자)"
 )
 async def bulk_nickname_update(interaction: discord.Interaction):
-    if not await check_service_available(interaction):
-        return
-
     if not is_admin(interaction.user):
         await interaction.response.send_message("❌ 관리자만 사용할 수 있습니다.", ephemeral=True)
         return
@@ -965,9 +891,7 @@ async def announce(
     await interaction.followup.send(result_text, ephemeral=True)
 
 
-@bot.tree.command(
-    name="백업생성", description="현재 DB를 백업합니다. (개발자)"
-)
+@bot.tree.command(name="백업생성", description="현재 DB를 백업합니다. (개발자)")
 async def backup_db(interaction: discord.Interaction):
     if not is_owner(interaction.user.id):
         await interaction.response.send_message("❌ 개발자만 사용할 수 있습니다.", ephemeral=True)
@@ -992,9 +916,7 @@ async def backup_db(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(
-    name="오류로그", description="최근 오류 로그를 확인합니다. (개발자)"
-)
+@bot.tree.command(name="오류로그", description="최근 오류 로그를 확인합니다. (개발자)")
 async def error_log(interaction: discord.Interaction):
     if not is_owner(interaction.user.id):
         await interaction.response.send_message("❌ 개발자만 사용할 수 있습니다.", ephemeral=True)
@@ -1015,9 +937,7 @@ async def error_log(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(
-    name="시스템정보", description="봇 시스템 정보를 확인합니다. (개발자)"
-)
+@bot.tree.command(name="시스템정보", description="봇 시스템 정보를 확인합니다. (개발자)")
 async def system_info(interaction: discord.Interaction):
     if not is_owner(interaction.user.id):
         await interaction.response.send_message("❌ 개발자만 사용할 수 있습니다.", ephemeral=True)
@@ -1047,9 +967,7 @@ async def system_info(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(
-    name="봇상태", description="봇의 상태를 변경합니다. (개발자)"
-)
+@bot.tree.command(name="봇상태", description="봇의 상태를 변경합니다. (개발자)")
 @app_commands.describe(상태="상태 선택 (준비중/정상/중지/오류수정중)")
 async def bot_status(interaction: discord.Interaction, 상태: str):
     if not is_owner(interaction.user.id):
@@ -1244,6 +1162,110 @@ async def bulk_unverify(interaction: discord.Interaction):
         "⚠ 모든 유저의 인증을 삭제할까요?", view=view, ephemeral=True
     )
 
+# ---------- 보고서 모달 / 명령어 ----------
+
+class PunishReportModal(discord.ui.Modal, title="처벌 보고서 양식"):
+    작성자 = discord.ui.TextInput(label="작성자 닉네임", required=True, max_length=50)
+    대상자 = discord.ui.TextInput(label="대상자 닉네임", required=True, max_length=50)
+    사유 = discord.ui.TextInput(
+        label="사유",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=400,
+    )
+    처벌 = discord.ui.TextInput(label="처벌 내용", required=True, max_length=100)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="처벌 보고서",
+            color=discord.Color.orange(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="작성자 닉네임", value=str(self.작성자), inline=False)
+        embed.add_field(name="대상자 닉네임", value=str(self.대상자), inline=False)
+        embed.add_field(name="사유", value=str(self.사유), inline=False)
+        embed.add_field(name="처벌", value=str(self.처벌), inline=False)
+        embed.set_footer(text="보고서 - 처벌")
+
+        await interaction.response.send_message(embed=embed)
+
+
+class PromoteReportModal(discord.ui.Modal, title="진급 보고서 양식"):
+    호스트 = discord.ui.TextInput(label="호스트 닉네임", required=True, max_length=50)
+    부호스트 = discord.ui.TextInput(
+        label="부호스트 닉네임 (없으면 비워두기)", required=False, max_length=50
+    )
+    시험종류 = discord.ui.TextInput(label="시험 종류", required=True, max_length=50)
+    결과 = discord.ui.TextInput(
+        label="결과 (합격/탈락/전합)",
+        required=True,
+        max_length=10,
+        placeholder="합격 / 탈락 / 전합 중 하나 입력",
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="진급 보고서",
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="호스트 닉네임", value=str(self.호스트), inline=False)
+        embed.add_field(
+            name="부호스트 닉네임",
+            value=str(self.부호스트) if str(self.부호스트) else "없음",
+            inline=False,
+        )
+        embed.add_field(name="시험 종류", value=str(self.시험종류), inline=False)
+        embed.add_field(name="결과", value=str(self.결과), inline=False)
+        embed.set_footer(text="보고서 - 진급")
+
+        await interaction.response.send_message(embed=embed)
+
+
+class BanReportModal(discord.ui.Modal, title="밴 보고서 양식"):
+    작성자 = discord.ui.TextInput(label="작성자 닉네임", required=True, max_length=50)
+    대상자 = discord.ui.TextInput(label="대상자 닉네임", required=True, max_length=50)
+    사유 = discord.ui.TextInput(
+        label="사유",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=400,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="밴 보고서",
+            color=discord.Color.red(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="작성자 닉네임", value=str(self.작성자), inline=False)
+        embed.add_field(name="대상자 닉네임", value=str(self.대상자), inline=False)
+        embed.add_field(name="사유", value=str(self.사유), inline=False)
+        embed.set_footer(text="보고서 - 밴")
+
+        await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="보고서", description="보고서 종류를 선택해 양식을 작성합니다.")
+@app_commands.describe(종류="보고서 종류 선택")
+@app_commands.choices(종류=[
+    app_commands.Choice(name="진급", value="promote"),
+    app_commands.Choice(name="처벌", value="punish"),
+    app_commands.Choice(name="밴", value="ban"),
+])
+async def report_cmd(interaction: discord.Interaction, 종류: app_commands.Choice[str]):
+    if 종류.value == "promote":
+        # /보고서 종류: 진급 -> 진급 모달
+        await interaction.response.send_modal(PromoteReportModal())
+    elif 종류.value == "punish":
+        # /보고서 종류: 처벌 -> 처벌 모달
+        await interaction.response.send_modal(PunishReportModal())
+    elif 종류.value == "ban":
+        # /보고서 종류: 밴 -> 밴 모달
+        await interaction.response.send_modal(BanReportModal())
+    else:
+        await interaction.response.send_message(
+            "알 수 없는 보고서 종류입니다.", ephemeral=True
+        )
 
 @bot.tree.command(name="재동기화", description="봇 명령어를 재동기화합니다. (개발자)")
 async def resync_commands(interaction: discord.Interaction):
@@ -1309,14 +1331,17 @@ async def auto_sync():
 
 
 @bot.event
+@bot.event
 async def on_ready():
     print("on_ready 호출")
 
     # 봇이 들어가 있는 모든 서버에 슬래시 명령어 동기화
+    synced_total = 0
     for guild in bot.guilds:
         try:
             synced = await bot.tree.sync(guild=guild)
             print(f"[{guild.name}]({guild.id}) 에 명령어 {len(synced)}개 동기화")
+            synced_total += len(synced)
         except Exception as e:
             print(f"[{guild.name}]({guild.id}) 동기화 실패: {repr(e)}")
 
@@ -1324,8 +1349,7 @@ async def on_ready():
     if not auto_sync.is_running():
         auto_sync.start()
 
-    print(f"봇 실행 완료: {bot.user} (ID: {bot.user.id})")
-
+    print(f"봇 실행 완료: {bot.user} (ID: {bot.user.id}), 총 동기화 명령어 수: {synced_total}")
 
 async def main():
     async with bot:
