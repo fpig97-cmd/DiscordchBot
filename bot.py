@@ -1420,6 +1420,49 @@ async def confirm_action(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+@bot.tree.command(name="일괄인증", description="현재 인증 역할이 없는 유저들을 일괄 인증합니다. (제작자 전용)")
+async def bulk_verify(interaction: discord.Interaction):
+    if interaction.user.id != OWNER_ID:
+        await interaction.response.send_message("❌ 제작자만 사용할 수 있는 명령어입니다.", ephemeral=True)
+        return
+
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message("길드에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    role_id = get_guild_role_id(guild.id)
+    if not role_id:
+        await interaction.response.send_message("❌ 이 서버에 설정된 인증 역할이 없습니다.", ephemeral=True)
+        return
+
+    role = guild.get_role(role_id)
+    if not role:
+        await interaction.response.send_message("❌ 설정된 인증 역할을 찾을 수 없습니다.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
+    added = 0
+    skipped = 0
+    for member in guild.members:
+        if member.bot:
+            continue
+        if role in member.roles:
+            skipped += 1
+            continue
+        try:
+            await member.add_roles(role, reason="일괄인증 명령어")
+            added += 1
+        except Exception as e:
+            add_error_log(f"bulk_verify add_roles error: {repr(e)}")
+
+    await interaction.followup.send(
+        f"✅ 일괄 인증 완료\n"
+        f"- 새로 인증된 유저: {added}명\n"
+        f"- 이미 인증되어 스킵: {skipped}명",
+        ephemeral=True,
+    )
 
 @bot.tree.command(name="확인삭제", description="일괄 인증 삭제 확인 (개발자)")
 async def confirm_unverify(interaction: discord.Interaction):
@@ -1443,24 +1486,22 @@ async def confirm_unverify(interaction: discord.Interaction):
 async def auto_sync():
     print("자동 동기화 완료")
 
-
-@bot.event
 # ---------- on_ready / 자동 동기화 ----------
 
 @bot.event
 async def on_ready():
     print("on_ready 호출")
+    print("tree commands count:", len(bot.tree.get_commands()))
 
-    total = 0
-    for guild in bot.guilds:
-        try:
-            synced = await bot.tree.sync(guild=guild)
-            print(f"[{guild.name}]({guild.id}) 에 명령어 {len(synced)}개 동기화")
-            total += len(synced)
-        except Exception as e:
-            print(f"[{guild.name}] sync 실패: {e!r}")
+    try:
+        # 🔹 전체 글로벌 동기화
+        synced = await bot.tree.sync()
+        print(f"글로벌 동기화된 명령어 수: {len(synced)}")
+    except Exception as e:
+        print(f"글로벌 sync 실패: {e!r}")
+        synced = []
 
-    print(f"봇 실행 완료: {bot.user} (ID: {bot.user.id}), 총 동기화 명령어 수: {total}")
+    print(f"봇 실행 완료: {bot.user} (ID: {bot.user.id}), 총 동기화 명령어 수: {len(synced)}")
     print("자동 동기화 완료")
 
 
