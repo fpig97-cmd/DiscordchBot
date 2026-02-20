@@ -1,4 +1,5 @@
 import os
+import re  
 import sqlite3
 import random
 import string
@@ -543,33 +544,66 @@ async def set_group_id(interaction: discord.Interaction, 그룹아이디: int):
         ephemeral=True,
     )
 
-@bot.tree.command(name="관리자지정", description="관리자 역할을 설정하거나 해제합니다. (개발자)")
-@app_commands.describe(역할="관리자 역할 (비워두면 해제)")
-async def set_admin_role(
-    interaction: discord.Interaction, 역할: Optional[discord.Role] = None
+@bot.tree.command(name="관리자지정", description="관리자 역할을 여러 개 설정하거나 해제합니다. (개발자)")
+@app_commands.describe(역할들="관리자 역할들을 멘션으로 여러 개 입력 (비워두면 전부 해제)")
+async def set_admin_roles(
+    interaction: discord.Interaction,
+    역할들: Optional[str] = None,
 ):
     if not is_owner(interaction.user.id):
         await interaction.response.send_message("❌ 개발자만 사용할 수 있습니다.", ephemeral=True)
         return
 
-    if 역할 is not None:
-        bot_member = interaction.guild.me
-        if bot_member.top_role <= 역할:
-            await interaction.response.send_message(
-                "❌ 봇의 최상위 역할보다 위의 역할은 설정할 수 없습니다.", ephemeral=True
-            )
-            return
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message("길드에서만 사용할 수 있습니다.", ephemeral=True)
+        return
 
-        set_guild_admin_role_id(interaction.guild.id, 역할.id)
-        await interaction.response.send_message(
-            f"✅ 관리자 역할을 {역할.mention}로 설정했습니다.", ephemeral=True
-        )
-    else:
-        set_guild_admin_role_id(interaction.guild.id, None)
+    # 🔻 인자 비우면 → 전체 관리자 역할 해제
+    if 역할들 is None:
+        set_guild_admin_role_id(guild.id, None)   # 내부 구현을: 여러 개 저장/삭제로 바꿔도 됨
         await interaction.response.send_message(
             "✅ 관리자 역할 설정을 해제했습니다.", ephemeral=True
         )
+        return
 
+    # 🔻 멘션 문자열에서 ID 추출
+    ids = re.findall(r"\d+", 역할들)
+    if not ids:
+        await interaction.response.send_message(
+            "역할을 멘션해서 입력하거나, 인자를 비워서 전체 해제해주세요.",
+            ephemeral=True,
+        )
+        return
+
+    bot_member = guild.me
+    role_ids: list[int] = []
+    mentions: list[str] = []
+
+    for _id in ids:
+        role = guild.get_role(int(_id))
+        if not role:
+            continue
+
+        # 봇 최상위 역할보다 위인 역할은 불가
+        if bot_member.top_role <= role:
+            await interaction.response.send_message(
+                f"❌ {role.mention} 은(는) 봇의 최상위 역할보다 위의 역할이라 설정할 수 없습니다.",
+                ephemeral=True,
+            )
+            return
+
+        if role.id not in role_ids:
+            role_ids.append(role.id)
+            mentions.append(role.mention)
+
+    # 🔻 여기서 여러 개 한 번에 저장하도록, 내부 구현을 리스트/JSON 등으로 바꾸면 됨
+    set_guild_admin_role_id(guild.id, role_ids)
+
+    await interaction.response.send_message(
+        "✅ 관리자 역할을 다음 역할들로 설정했습니다:\n" + ", ".join(mentions),
+        ephemeral=True,
+    )
 
 @bot.tree.command(name="핑", description="봇의 응답 속도를 확인합니다.")
 async def ping(interaction: discord.Interaction):
